@@ -1,0 +1,30 @@
+# Build artifacts
+build/
+out/
+cmake-build-*/
+
+# ROM files (bring your own)
+rom/
+*.gen
+*.bin
+*.zip
+
+# IDE
+.vs/
+.vscode/
+*.suo
+*.user
+*.sln.docstates
+.idea/
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Uncomment to exclude generated code (can be regenerated from ROM):
+# src/recompiled/
+
+# Python
+__pycache__/
+*.pyc
+.claude/
