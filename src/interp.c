@@ -15,6 +15,7 @@
 
 #include <genrecomp/genrecomp.h>
 #include "genchaos.h"
+#include "interp.h"
 #include <stdio.h>
 #include <stdbool.h>
 
@@ -25,6 +26,18 @@
 static int s_interp_calls = 0;
 static int s_interp_logged = 0;
 #define INTERP_MAX_LOG 20
+
+/* ====================================================================
+ * Unified call dispatch — the backbone of runtime execution
+ *
+ * Every function call in the recompiled code goes through here.
+ * Tries the recompiled function table first (fast path), and if the
+ * address isn't found, falls back to the interpreter.
+ * ==================================================================== */
+void genchaos_call(uint32_t addr) {
+    if (func_table_call(addr)) return;
+    interp_execute(addr);
+}
 
 /* Sign extension helpers */
 static int32_t sext8(uint8_t v) { return (int32_t)(int8_t)v; }

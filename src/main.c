@@ -70,14 +70,31 @@ static bool call_with_fallback(uint32_t addr) {
 static uint32_t vblank_vector = 0;
 static int frame_count = 0;
 
+static int max_frames = 0;  /* 0 = unlimited */
+
 static void vblank_handler(void) {
     if (vblank_vector) {
         call_with_fallback(vblank_vector);
     }
 
-    /* Render and present this frame */
+    /* Render and present this frame (if genrecomp is initialized) */
     genrecomp_end_frame();
     frame_count++;
+
+    /* Check frame limit (headless mode) */
+    if (max_frames > 0 && frame_count >= max_frames) {
+        printf("\n  Headless test complete: %d frames.\n", frame_count);
+        if (s_miss_count > 0) {
+            printf("  %d unique function addresses were not recompiled:\n", s_miss_count);
+            for (int i = 0; i < s_miss_count && i < 30; i++) {
+                printf("    $%06X\n", s_miss_log[i]);
+            }
+        } else {
+            printf("  All function calls resolved successfully!\n");
+        }
+        genrecomp_shutdown();
+        exit(0);
+    }
 
     /* Start next frame (poll input, reset cycle counters) */
     if (!genrecomp_begin_frame()) {
@@ -86,7 +103,6 @@ static void vblank_handler(void) {
         printf("  A Brian Colin / Jeff Nauman production.\n\n");
         if (s_miss_count > 0) {
             printf("  %d unique function addresses were not recompiled.\n", s_miss_count);
-            printf("  Re-run the recompiler to discover these code paths.\n");
         }
         genrecomp_shutdown();
         exit(0);
@@ -114,15 +130,24 @@ int main(int argc, char *argv[]) {
     printf("  ============================================\n");
     printf("\n");
 
+    int headless_frames = 0;  /* 0 = normal, >0 = headless test mode */
+
     /* Parse command line */
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--scale") == 0 && i + 1 < argc) {
             scale = atoi(argv[++i]);
             if (scale < 1) scale = 1;
             if (scale > 8) scale = 8;
+        } else if (strcmp(argv[i], "--headless") == 0 && i + 1 < argc) {
+            headless_frames = atoi(argv[++i]);
+            if (headless_frames < 1) headless_frames = 60;
         } else if (argv[i][0] != '-') {
             rom_path = argv[i];
         }
+    }
+
+    if (headless_frames > 0) {
+        printf("  HEADLESS MODE: running %d frames without display\n\n", headless_frames);
     }
 
     /* Find ROM path from args or default location */
@@ -155,8 +180,18 @@ int main(int argc, char *argv[]) {
     printf("  Scale: %dx (%dx%d window)\n\n", scale, 320 * scale, 224 * scale);
 
     /* Initialize genrecomp (creates SDL2 window + Genesis hardware) */
+    if (headless_frames > 0) {
+        /* In headless mode, suppress audio to avoid device issues */
+#ifdef _WIN32
+        _putenv("SDL_AUDIODRIVER=dummy");
+#else
+        setenv("SDL_AUDIODRIVER", "dummy", 1);
+#endif
+    }
+
     if (!genrecomp_init("General Chaos — A Brian Colin Production", scale)) {
         fprintf(stderr, "Failed to initialize genrecomp!\n");
+        fprintf(stderr, "(If running headless, ensure a display/GPU is available)\n");
         return 1;
     }
 
@@ -200,6 +235,7 @@ int main(int argc, char *argv[]) {
      * game's own control flow, exactly like real hardware.
      * ================================================================ */
     bus_set_vblank_callback(vblank_handler);
+    max_frames = headless_frames;
 
     /* Start the first frame */
     genrecomp_begin_frame();
@@ -226,8 +262,26 @@ int main(int argc, char *argv[]) {
         fflush(stdout);
 
         while (genrecomp_begin_frame()) {
+            /* Call VBlank handler directly if registered */
+            if (vblank_vector) {
+                call_with_fallback(vblank_vector);
+            }
             genrecomp_trigger_vblank();
             genrecomp_end_frame();
+            frame_count++;
+
+            if (max_frames > 0 && frame_count >= max_frames) {
+                printf("\n  Headless test complete: %d frames.\n", frame_count);
+                if (s_miss_count > 0) {
+                    printf("  %d unique function addresses were not recompiled:\n", s_miss_count);
+                    for (int i = 0; i < s_miss_count && i < 30; i++) {
+                        printf("    $%06X\n", s_miss_log[i]);
+                    }
+                } else {
+                    printf("  All function calls resolved!\n");
+                }
+                break;
+            }
         }
     } else {
         fprintf(stderr, "  Entry point $%06X could not be executed!\n", entry_pc);
