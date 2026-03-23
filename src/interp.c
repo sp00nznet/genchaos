@@ -314,9 +314,8 @@ bool interp_execute(uint32_t addr) {
 
         /* ---- RTE ---- */
         if (op == 0x4E73) {
-            uint16_t sr = bus_read16(g_m68k.a[7]); g_m68k.a[7] += 2;
-            g_m68k.pc = bus_read32(g_m68k.a[7]); g_m68k.a[7] += 4;
-            m68k_set_sr(sr);
+            /* Just return — the exception frame is popped by the caller
+             * (recomp_m68k_exception handles the SR+PC pop). */
             return true;
         }
 
@@ -596,6 +595,44 @@ bool interp_execute(uint32_t addr) {
             if (group == 8 && opmode == 7) {
                 uint16_t val = (uint16_t)read_ea(&pc, ea_mode, ea_reg, 1);
                 M68K_DIVS(g_m68k.d[dreg], val);
+                continue;
+            }
+
+            /* Dn op <ea> -> <ea> (opmode 4/5/6) — memory destination */
+            if (opmode >= 4 && opmode <= 6 && group != 0xB) {
+                int size = opmode - 4;
+                /* Need to read, operate, then write back to EA */
+                /* Save PC so we can re-read the EA for writing */
+                uint32_t ea_pc = pc;
+                uint32_t dst = read_ea(&pc, ea_mode, ea_reg, size);
+                uint32_t src;
+                if (size == 0) src = (uint8_t)g_m68k.d[dreg];
+                else if (size == 1) src = (uint16_t)g_m68k.d[dreg];
+                else src = g_m68k.d[dreg];
+
+                uint32_t result = dst;
+                if (size == 0) {
+                    uint8_t tmp = (uint8_t)dst;
+                    if (group == 0xD) M68K_ADD8(tmp, (uint8_t)src);
+                    else if (group == 9) M68K_SUB8(tmp, (uint8_t)src);
+                    else if (group == 8) M68K_OR8(tmp, (uint8_t)src);
+                    else if (group == 0xC) M68K_AND8(tmp, (uint8_t)src);
+                    result = tmp;
+                } else if (size == 1) {
+                    uint16_t tmp = (uint16_t)dst;
+                    if (group == 0xD) M68K_ADD16(tmp, (uint16_t)src);
+                    else if (group == 9) M68K_SUB16(tmp, (uint16_t)src);
+                    else if (group == 8) M68K_OR16(tmp, (uint16_t)src);
+                    else if (group == 0xC) M68K_AND16(tmp, (uint16_t)src);
+                    result = tmp;
+                } else {
+                    if (group == 0xD) M68K_ADD32(result, src);
+                    else if (group == 9) M68K_SUB32(result, src);
+                    else if (group == 8) M68K_OR32(result, src);
+                    else if (group == 0xC) M68K_AND32(result, src);
+                }
+                /* Write back — re-parse EA from saved position */
+                write_ea(&ea_pc, ea_mode, ea_reg, size, result);
                 continue;
             }
 

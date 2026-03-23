@@ -72,14 +72,30 @@ static int frame_count = 0;
 
 static int max_frames = 0;  /* 0 = unlimited */
 
+static bool s_in_vblank = false;
+
 static void vblank_handler(void) {
+    if (s_in_vblank) return;  /* Prevent re-entry */
     if (vblank_vector) {
-        call_with_fallback(vblank_vector);
+        s_in_vblank = true;
+        /*
+         * Simulate a real M68K level-6 interrupt using the proper
+         * exception mechanism. This pushes SR+PC onto the supervisor
+         * stack, calls the handler, and RTE pops them back.
+         */
+        recomp_m68k_exception(30); /* Vector 30 = VBlank */
+        s_in_vblank = false;
     }
 
     /* Render and present this frame (if genrecomp is initialized) */
     genrecomp_end_frame();
     frame_count++;
+
+    /* Progress reporting for headless mode */
+    if (max_frames > 0 && (frame_count % 60 == 0 || frame_count <= 5)) {
+        fprintf(stderr, "  Frame %d/%d (SP=$%08X)\n", frame_count, max_frames, g_m68k.a[7]);
+        fflush(stderr);
+    }
 
     /* Check frame limit (headless mode) */
     if (max_frames > 0 && frame_count >= max_frames) {
@@ -262,9 +278,9 @@ int main(int argc, char *argv[]) {
         fflush(stdout);
 
         while (genrecomp_begin_frame()) {
-            /* Call VBlank handler directly if registered */
+            /* Call VBlank handler via exception mechanism */
             if (vblank_vector) {
-                call_with_fallback(vblank_vector);
+                recomp_m68k_exception(30); /* Vector 30 = VBlank */
             }
             genrecomp_trigger_vblank();
             genrecomp_end_frame();

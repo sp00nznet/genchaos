@@ -613,10 +613,12 @@ class Disassembler:
 
         # ---- RTE ----
         if op == 0x4E73:
+            # RTE just returns to the C caller. The exception frame (SR + PC)
+            # is popped by recomp_m68k_exception() after this function returns.
+            # If called outside an exception context, the frame is already
+            # handled by the caller's stack management.
             return 2, [
-                "{ uint16_t _sr = bus_read16(g_m68k.a[7]); g_m68k.a[7] += 2;",
-                "  g_m68k.pc = bus_read32(g_m68k.a[7]); g_m68k.a[7] += 4;",
-                "  m68k_set_sr(_sr); }",
+                "/* RTE — return from exception (frame popped by caller) */",
                 "return;"
             ], True, [], False
 
@@ -1677,6 +1679,22 @@ class Disassembler:
             if vec > 0x200 and vec < self.rom_size and vec not in self.func_entries:
                 self.func_entries.add(vec)
                 self.pending.append(vec)
+
+        # Add manually-discovered hot-path functions from runtime testing
+        # These are addresses the interpreter handles frequently that should
+        # be recompiled for performance.
+        hot_path_addrs = [
+            0x0DF826,  # Z80/sound driver init — called every VBlank
+            # Note: $0E0150 and $0DFDEA are NOT seeded as separate functions
+            # because they form a DBcc loop. $0E0150 branches back to
+            # $0DFDEA which is inside func_0DFDE2. Seeding them as
+            # separate entries would create cross-function call loops.
+        ]
+        for addr in hot_path_addrs:
+            if 0x200 <= addr < self.rom_size and addr not in self.func_entries:
+                self.func_entries.add(addr)
+                self.pending.append(addr)
+                print(f"  Hot-path seed: ${addr:06X}")
 
         # Scan for jump tables and subroutine calls throughout the ROM
         self._scan_jump_tables()
