@@ -97,6 +97,23 @@ static void vblank_handler(void) {
      * this callback drives the full frame cycle: render + present.
      */
     genrecomp_end_frame();
+    frame_count++;
+
+    /* Progress reporting */
+    if (max_frames > 0 && (frame_count % 300 == 0)) {
+        uint16_t game_state = bus_read16(0xFF0332);
+        fprintf(stderr, "  Frame %5d/%d  SP=$%08X  state=%d\n",
+                frame_count, max_frames, g_m68k.a[7], game_state);
+        fflush(stderr);
+    }
+
+    /* Frame limit for headless mode */
+    if (max_frames > 0 && frame_count >= max_frames) {
+        printf("\n  Headless test complete: %d frames.\n", frame_count);
+        printf("  Game state: %d\n", bus_read16(0xFF0332));
+        genrecomp_shutdown();
+        exit(0);
+    }
 
     if (!genrecomp_begin_frame()) {
         printf("\n  Thanks for playing General Chaos!\n");
@@ -108,6 +125,26 @@ static void vblank_handler(void) {
 /* ====================================================================
  * Main — where the chaos begins
  * ==================================================================== */
+
+/*
+ * Hand-written native handler for $00028C — BRA $0002FA.
+ * The entry point calls this to jump to the real init continuation.
+ */
+static void native_00028C(void) {
+    genchaos_call(0x0002FA);
+}
+
+/*
+ * Hand-written native handler for $000224 — init continuation after ANDI.
+ * func_000200's last instruction is ANDI at $220 (4 bytes), so the next
+ * instruction is $224. But $224 falls inside func_000200's code range
+ * so it can't be a separate recompiled function. This handler bridges
+ * the gap: it interprets from $224 which flows through the VDP/Z80 init
+ * and eventually reaches $28C (BRA $2FA) → main game loop.
+ */
+static void native_000224(void) {
+    interp_execute(0x000224);
+}
 
 /*
  * Hand-written native handler for $0E0150 — the DBF D7,$0DFDEA loop.
@@ -221,6 +258,27 @@ int main(int argc, char *argv[]) {
     genchaos_register_all();
 
     /*
+     * Register native handler for $000224 — init continuation after the
+     * ANDI.B #$0F,D0 at $220. This bridges func_000200 (which returns
+     * after $220) to the TMSS/VDP/Z80 init code that follows.
+     */
+    {
+        static void native_000224(void);
+        func_table_register(0x000224, native_000224);
+    }
+
+    /*
+     * Register hand-written native handler for $00028C — the BRA $0002FA
+     * at the end of the TMSS/init code. func_000200 calls this to jump
+     * to the real init continuation. Without this, the interpreter handles
+     * it and may hit instruction limits.
+     */
+    {
+        static void native_00028C(void);
+        func_table_register(0x00028C, native_00028C);
+    }
+
+    /*
      * Register hand-written native handler for $0E0150 — a DBF loop
      * that's called ~6x per VBlank from multiple functions. It was merged
      * as a label inside func_0DFDE2, so the function table doesn't have it.
@@ -283,7 +341,19 @@ int main(int argc, char *argv[]) {
      * should never return. Frame rendering happens inside the VBlank
      * callback whenever the bus simulation detects VBlank timing.
      */
-    if (call_with_fallback(entry_pc)) {
+    /*
+     * The entry point at $000200 does a TMSS check and loads config.
+     * On fresh boot ($A10008 = 0), it returns after ANDI at $220.
+     * The real init continues at $224 (TMSS write, VDP/Z80 setup),
+     * flowing through to $28C (BRA $2FA) → $116A → $1242 (main loop).
+     *
+     * We call $200 first, then $224 to ensure the full init runs.
+     */
+    call_with_fallback(entry_pc);
+    /* Now call the init continuation that func_000200 should fall through to */
+    call_with_fallback(0x000224);
+
+    if (true) {
         /* Entry point returned — unusual, but handle it.
          * Fall through to a VBlank-driven frame loop. */
         printf("  Entry point returned. Running VBlank-driven loop.\n");
@@ -298,10 +368,15 @@ int main(int argc, char *argv[]) {
             genrecomp_end_frame();
             frame_count++;
 
-            /* Progress reporting */
+            /* Progress reporting with game state */
             if (max_frames > 0 && (frame_count % 300 == 0)) {
-                fprintf(stderr, "  Frame %d/%d (SP=$%08X)\n",
-                        frame_count, max_frames, g_m68k.a[7]);
+                /* Read game state from RAM $FF0332 (main state machine variable) */
+                uint16_t game_state = bus_read16(0xFF0332);
+                /* Read a few other interesting RAM locations */
+                uint16_t vblank_count = bus_read16(0xFF0334);
+                fprintf(stderr, "  Frame %5d/%d  SP=$%08X  state=%d  vbl=%d\n",
+                        frame_count, max_frames, g_m68k.a[7],
+                        game_state, vblank_count);
                 fflush(stderr);
             }
 

@@ -1235,6 +1235,15 @@ class Disassembler:
         total_len = pc - addr
 
         if cc == 0:  # BRA
+            if target == addr:
+                # Self-loop (BRA $self) — spin-wait for interrupt.
+                # On real hardware, VBlank breaks out of this. In recompiled
+                # code, we need to yield: do a bus read to advance cycles
+                # so the VBlank callback fires.
+                return total_len, [
+                    f"/* BRA $self — VBlank spin-wait */",
+                    f"while (1) {{ bus_read16(0xC00004); /* tick cycles until VBlank */ }}"
+                ], True, [], False
             return total_len, [f"goto lbl_{target:06X};"], True, [target], False
 
         elif cc == 1:  # BSR
@@ -1684,6 +1693,10 @@ class Disassembler:
         # These are addresses the interpreter handles frequently that should
         # be recompiled for performance.
         hot_path_addrs = [
+            0x000224,  # Init continuation after ANDI at $220 (TMSS/VDP/Z80 init)
+            0x0002FA,  # Init continuation (VDP register setup, main init calls)
+            0x00116A,  # Main game initialization (VDP palette/tile clear + setup)
+            0x001242,  # Main game loop (enable interrupts + spin-wait for VBlank)
             0x0DF826,  # Z80/sound driver init — called every VBlank
             0x0DFDEA,  # VBlank processing body — called from hand-written $0E0150
             # Note: $0E0150 is NOT seeded — it's hand-written in main.c

@@ -20,7 +20,7 @@
 #include <stdbool.h>
 
 /* Maximum instructions to interpret before bailing out */
-#define INTERP_MAX_INSNS 50000
+#define INTERP_MAX_INSNS 200000
 
 /* Logging control */
 static int s_interp_calls = 0;
@@ -340,6 +340,11 @@ bool interp_execute(uint32_t addr) {
             uint32_t target = (pc - (disp8 == 0 ? 2 : disp8 == 0xFF ? 4 : 0) + disp) & 0xFFFFFF;
 
             if (cc == 0) { /* BRA */
+                if (target == pc - (disp8 == 0 ? 4 : disp8 == (int)0xFF ? 6 : 2)) {
+                    /* BRA $self — spin-wait for interrupt */
+                    /* Tick cycles until VBlank fires via bus callback */
+                    while (1) { bus_read16(0xC00004); }
+                }
                 pc = target;
             } else if (cc == 1) { /* BSR */
                 g_m68k.a[7] -= 4;
@@ -495,6 +500,61 @@ bool interp_execute(uint32_t addr) {
                     uint8_t val = test_cc(cc) ? 0xFF : 0x00;
                     write_ea(&pc, ea_mode, ea_reg, 0, val);
                 }
+            }
+            continue;
+        }
+
+        /* ---- MOVE USP ---- */
+        if ((op & 0xFFF0) == 0x4E60) {
+            int areg = op & 7;
+            if (op & 0x0008) {
+                g_m68k.a[areg] = g_m68k.usp;  /* MOVE USP, An */
+            } else {
+                g_m68k.usp = g_m68k.a[areg];  /* MOVE An, USP */
+            }
+            continue;
+        }
+
+        /* ---- BTST/BCHG/BCLR/BSET with register ---- */
+        if (group == 0 && (op & 0x0100)) {
+            int bit_reg = (op >> 9) & 7;
+            int sub = (op >> 6) & 3;
+            int ea_mode = (op >> 3) & 7;
+            int ea_reg = op & 7;
+            if (ea_mode == 1) {
+                /* MOVEP — skip for now */
+                fetch16(&pc);  /* skip displacement */
+                continue;
+            }
+            int size = (ea_mode == 0) ? 2 : 0;  /* long for Dn, byte for mem */
+            uint32_t val = read_ea(&pc, ea_mode, ea_reg, size);
+            int bit = g_m68k.d[bit_reg] & ((ea_mode == 0) ? 31 : 7);
+            g_m68k.flag_Z = !(val & (1u << bit));
+            if (sub == 1) val ^= (1u << bit);       /* BCHG */
+            else if (sub == 2) val &= ~(1u << bit); /* BCLR */
+            else if (sub == 3) val |= (1u << bit);  /* BSET */
+            if (sub > 0 && ea_mode == 0) {
+                g_m68k.d[ea_reg] = val;
+            }
+            /* For memory, would need write-back — BTST doesn't need it */
+            continue;
+        }
+
+        /* ---- BTST/BCHG/BCLR/BSET with immediate bit ---- */
+        if (group == 0 && !((op >> 8) & 1) && ((op >> 9) & 7) == 4) {
+            int sub = (op >> 6) & 3;
+            int ea_mode = (op >> 3) & 7;
+            int ea_reg = op & 7;
+            int bit_num = fetch16(&pc) & 0xFF;
+            int size = (ea_mode == 0) ? 2 : 0;
+            uint32_t val = read_ea(&pc, ea_mode, ea_reg, size);
+            int bit = bit_num & ((ea_mode == 0) ? 31 : 7);
+            g_m68k.flag_Z = !(val & (1u << bit));
+            if (sub == 1) val ^= (1u << bit);
+            else if (sub == 2) val &= ~(1u << bit);
+            else if (sub == 3) val |= (1u << bit);
+            if (sub > 0 && ea_mode == 0) {
+                g_m68k.d[ea_reg] = val;
             }
             continue;
         }
