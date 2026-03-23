@@ -1934,6 +1934,54 @@ class Disassembler:
             if best_func is not None:
                 func_code[best_func].append(a)
 
+        # Merge functions that form tight loops across boundaries.
+        # If function A falls through to function B, and B branches back
+        # to A (e.g., a DBcc loop), merge B into A.
+        merge_count = 0
+        merged_into = {}  # entry -> parent entry it was merged into
+        for entry in sorted(func_code.keys()):
+            if entry in merged_into:
+                continue
+            addrs = func_code[entry]
+            if not addrs:
+                continue
+            last_addr = addrs[-1]
+            if last_addr not in self.instructions:
+                continue
+            length, _, is_term, _, _ = self.instructions[last_addr]
+            if is_term:
+                continue
+            # This function falls through to the next address
+            next_addr = last_addr + length
+            if next_addr in func_code and next_addr not in merged_into:
+                # Check if next_addr's function branches back to our range
+                next_addrs = func_code[next_addr]
+                branches_back = False
+                for na in next_addrs:
+                    if na in self.instructions:
+                        _, _, _, targets, is_call = self.instructions[na]
+                        if not is_call:
+                            for t in targets:
+                                if t in set(addrs):
+                                    branches_back = True
+                                    break
+                    if branches_back:
+                        break
+                if branches_back:
+                    # Merge next function into current
+                    func_code[entry] = sorted(set(addrs) | set(next_addrs))
+                    merged_into[next_addr] = entry
+                    merge_count += 1
+
+        # Remove merged functions
+        for merged_entry in merged_into:
+            if merged_entry in func_code:
+                del func_code[merged_entry]
+            self.func_entries.discard(merged_entry)
+
+        if merge_count:
+            print(f"  Merged {merge_count} tight-loop function pairs")
+
         # Filter out function entries that fall inside decoded instructions
         # (false positives from the ROM call scan)
         bad_entries = set()

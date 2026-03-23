@@ -87,39 +87,19 @@ static void vblank_handler(void) {
         s_in_vblank = false;
     }
 
-    /* Render and present this frame (if genrecomp is initialized) */
+    /*
+     * NOTE: When the VBlank callback fires during bus cycle simulation
+     * (inside the manual frame loop's recomp_m68k_exception call),
+     * we only handle the interrupt. Frame rendering and counting are
+     * managed by the manual loop itself.
+     *
+     * When the entry point contains its own main loop (never returns),
+     * this callback drives the full frame cycle: render + present.
+     */
     genrecomp_end_frame();
-    frame_count++;
 
-    /* Progress reporting for headless mode */
-    if (max_frames > 0 && (frame_count % 60 == 0 || frame_count <= 5)) {
-        fprintf(stderr, "  Frame %d/%d (SP=$%08X)\n", frame_count, max_frames, g_m68k.a[7]);
-        fflush(stderr);
-    }
-
-    /* Check frame limit (headless mode) */
-    if (max_frames > 0 && frame_count >= max_frames) {
-        printf("\n  Headless test complete: %d frames.\n", frame_count);
-        if (s_miss_count > 0) {
-            printf("  %d unique function addresses were not recompiled:\n", s_miss_count);
-            for (int i = 0; i < s_miss_count && i < 30; i++) {
-                printf("    $%06X\n", s_miss_log[i]);
-            }
-        } else {
-            printf("  All function calls resolved successfully!\n");
-        }
-        genrecomp_shutdown();
-        exit(0);
-    }
-
-    /* Start next frame (poll input, reset cycle counters) */
     if (!genrecomp_begin_frame()) {
-        /* User requested quit — exit the game */
-        printf("\n  Ran %d frames. Thanks for playing!\n", frame_count);
-        printf("  A Brian Colin / Jeff Nauman production.\n\n");
-        if (s_miss_count > 0) {
-            printf("  %d unique function addresses were not recompiled.\n", s_miss_count);
-        }
+        printf("\n  Thanks for playing General Chaos!\n");
         genrecomp_shutdown();
         exit(0);
     }
@@ -285,6 +265,13 @@ int main(int argc, char *argv[]) {
             genrecomp_trigger_vblank();
             genrecomp_end_frame();
             frame_count++;
+
+            /* Progress reporting */
+            if (max_frames > 0 && (frame_count % 300 == 0)) {
+                fprintf(stderr, "  Frame %d/%d (SP=$%08X)\n",
+                        frame_count, max_frames, g_m68k.a[7]);
+                fflush(stderr);
+            }
 
             if (max_frames > 0 && frame_count >= max_frames) {
                 printf("\n  Headless test complete: %d frames.\n", frame_count);
