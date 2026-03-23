@@ -41,6 +41,7 @@ file(GLOB RECOMPILED_SOURCES
 # ============================================================================
 add_executable(genchaos
     src/main.c
+    src/interp.c
     ${RECOMPILED_SOURCES}
 )
 

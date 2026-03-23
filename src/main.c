@@ -16,6 +16,7 @@
 
 #include <genrecomp/genrecomp.h>
 #include "genchaos.h"
+#include "interp.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -38,8 +39,19 @@ static void log_miss(uint32_t addr) {
     }
     if (s_miss_count < MAX_MISS_LOG) {
         s_miss_log[s_miss_count++] = addr;
-        fprintf(stderr, "  MISS: func_table_call($%06X) — not recompiled\n", addr);
     }
+}
+
+/*
+ * Enhanced function call: try recompiled code first, fall back to interpreter.
+ * This is used for the entry point and VBlank handler where we need
+ * the interpreter fallback. The recompiled code itself still uses
+ * func_table_call directly (which is fast but doesn't have fallback).
+ */
+static bool call_with_fallback(uint32_t addr) {
+    if (func_table_call(addr)) return true;
+    log_miss(addr);
+    return interp_execute(addr);
 }
 
 /* ====================================================================
@@ -60,7 +72,7 @@ static int frame_count = 0;
 
 static void vblank_handler(void) {
     if (vblank_vector) {
-        func_table_call(vblank_vector);
+        call_with_fallback(vblank_vector);
     }
 
     /* Render and present this frame */
@@ -207,7 +219,7 @@ int main(int argc, char *argv[]) {
      * should never return. Frame rendering happens inside the VBlank
      * callback whenever the bus simulation detects VBlank timing.
      */
-    if (func_table_call(entry_pc)) {
+    if (call_with_fallback(entry_pc)) {
         /* Entry point returned — unusual, but handle it.
          * Fall through to a VBlank-driven frame loop. */
         printf("  Entry point returned. Running VBlank-driven loop.\n");
@@ -218,8 +230,8 @@ int main(int argc, char *argv[]) {
             genrecomp_end_frame();
         }
     } else {
-        fprintf(stderr, "  Entry point $%06X not found in function table!\n", entry_pc);
-        fprintf(stderr, "  Cannot run game without entry point code.\n");
+        fprintf(stderr, "  Entry point $%06X could not be executed!\n", entry_pc);
+        fprintf(stderr, "  (Neither recompiled code nor interpreter succeeded)\n");
     }
 
     printf("\n  Ran %d frames. Thanks for playing!\n", frame_count);

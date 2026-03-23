@@ -1916,9 +1916,27 @@ class Disassembler:
             if best_func is not None:
                 func_code[best_func].append(a)
 
+        # Filter out function entries that fall inside decoded instructions
+        # (false positives from the ROM call scan)
+        bad_entries = set()
+        for addr, (length, _, _, _, _) in self.instructions.items():
+            if length > 2:
+                for offset in range(2, length, 2):
+                    mid = addr + offset
+                    if mid in self.func_entries and mid != addr:
+                        bad_entries.add(mid)
+
+        if bad_entries:
+            print(f"  Filtered {len(bad_entries)} mid-instruction false function entries")
+            for bad in bad_entries:
+                self.func_entries.discard(bad)
+                if bad in func_code:
+                    del func_code[bad]
+
         self.func_bounds = {}
         for entry, addrs in func_code.items():
-            self.func_bounds[entry] = sorted(addrs)
+            if entry not in bad_entries:
+                self.func_bounds[entry] = sorted(addrs)
 
         print(f"  Built {len(self.func_bounds)} function boundaries")
 
@@ -1929,6 +1947,11 @@ class Disassembler:
     def generate_c(self, output_dir):
         """Generate C source files from disassembled functions."""
         os.makedirs(output_dir, exist_ok=True)
+
+        # Clean up old generated files
+        import glob
+        for old_file in glob.glob(os.path.join(output_dir, "recomp_*.c")):
+            os.remove(old_file)
 
         func_list = sorted(self.func_bounds.keys())
         total_funcs = len(func_list)
@@ -2054,8 +2077,13 @@ class Disassembler:
         if addrs:
             last = addrs[-1]
             if last in self.instructions:
-                _, _, is_term, _, _ = self.instructions[last]
+                length, _, is_term, _, _ = self.instructions[last]
                 if not is_term:
+                    # Check if the next address is a known function entry
+                    # If so, tail-call it to maintain flow continuity
+                    next_addr = last + length
+                    if next_addr in self.func_entries:
+                        f.write(f"    func_table_call(0x{next_addr:06X}); /* fall through */ \n")
                     f.write("    return;\n")
 
         f.write("}\n\n")

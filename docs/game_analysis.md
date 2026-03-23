@@ -105,13 +105,16 @@ The VBlank service routine handles:
 
 | Metric | Value |
 |--------|-------|
-| Functions discovered | 940 |
-| Instructions recompiled | 46,282 |
-| Lines of C generated | ~68,000 |
+| Functions discovered | 1,139 |
+| Instructions recompiled | 62,230 |
+| Lines of C generated | ~80,000 |
 | Jump tables detected | 71 |
 | Pointer tables detected | 608 |
-| Source files generated | 5 + 1 register file |
-| Native executable size | 3.5 MB |
+| Fall-through chains | 225 |
+| False entries filtered | 269 |
+| Source files generated | 6 + 1 register file |
+| Interpreter fallback | Yes (handles ~30 instruction types) |
+| Native executable size | ~3.5 MB |
 
 ## Original Creators
 
