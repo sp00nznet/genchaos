@@ -96,15 +96,21 @@ int main(int argc, char *argv[]) {
     }
 
     /* Load the ROM — this populates the Genesis memory map */
+    printf("  Loading ROM...\n");
+    fflush(stdout);
+
     if (!genrecomp_load_rom(rom_path)) {
         fprintf(stderr, "Failed to load ROM: %s\n", rom_path);
         genrecomp_shutdown();
         return 1;
     }
+    printf("  ROM loaded successfully.\n");
+    fflush(stdout);
 
     /* Register all recompiled functions */
     genchaos_register_all();
     printf("  Registered %d recompiled functions\n", GENCHAOS_NUM_FUNCS);
+    fflush(stdout);
 
     /* Read vector table from loaded ROM */
     uint32_t entry_pc = bus_read32(0x000004);
@@ -122,6 +128,7 @@ int main(int argc, char *argv[]) {
     printf("    Escape      = Quit\n");
     printf("\n");
     printf("  LET THE CHAOS BEGIN!\n\n");
+    fflush(stdout);
 
     /* Set up VBlank callback for bus cycle simulation */
     bus_set_vblank_callback(vblank_handler);
@@ -133,8 +140,19 @@ int main(int argc, char *argv[]) {
     g_m68k.flag_S = true;
     g_m68k.int_mask = 7;
 
+    printf("  CPU initialized: SSP=$%08X PC=$%06X\n", g_m68k.ssp, g_m68k.pc);
+    printf("  Calling entry point...\n");
+    fflush(stdout);
+
     /* Run the entry point (game initialization) */
-    func_table_call(entry_pc);
+    if (!func_table_call(entry_pc)) {
+        printf("  WARNING: Entry point $%06X not found in function table!\n", entry_pc);
+        printf("  The game's init code may use addresses not yet discovered.\n");
+        printf("  Continuing to main loop anyway...\n");
+    } else {
+        printf("  Entry point returned successfully.\n");
+    }
+    fflush(stdout);
 
     /* Main game loop */
     while (genrecomp_begin_frame()) {

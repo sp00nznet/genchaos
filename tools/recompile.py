@@ -202,17 +202,18 @@ class Disassembler:
                 return r, w, 2, ("mem_idx", base_addr & 0xFFFFFF)
 
             elif reg == 4:  # #immediate
+                nop_write = "(void)({val}) /* imm write */"
                 if size == SIZE_BYTE:
                     val = self.read16(pc) & 0xFF
-                    return f"0x{val:02X}", None, 2, ("imm", val)
+                    return f"0x{val:02X}", nop_write, 2, ("imm", val)
                 elif size == SIZE_WORD:
                     val = self.read16(pc)
-                    return f"0x{val:04X}", None, 2, ("imm", val)
+                    return f"0x{val:04X}", nop_write, 2, ("imm", val)
                 elif size == SIZE_LONG:
                     val = self.read32(pc)
-                    return f"0x{val:08X}", None, 4, ("imm", val)
+                    return f"0x{val:08X}", nop_write, 4, ("imm", val)
 
-        return "0 /* UNKNOWN_EA */", None, 0, None
+        return "0 /* UNKNOWN_EA */", "(void)({val}) /* UNKNOWN_EA_WRITE */", 0, None
 
     # ========================================================================
     # Instruction Decoding — returns (length_bytes, c_code_lines, is_terminal, branch_targets)
@@ -273,7 +274,7 @@ class Disassembler:
 
         # ---- Group 10: Line-A (unimplemented) ----
         elif group == 0xA:
-            return 2, [f"/* ${addr:06X}: LINE-A ${op:04X} (unimplemented) */"], True, [], False
+            return 2, [f"/* ${addr:06X}: LINE-A ${op:04X} (unimplemented) */", "return;"], True, [], False
 
         # ---- Group 11: CMP/CMPA/EOR/CMPM ----
         elif group == 0xB:
@@ -293,7 +294,7 @@ class Disassembler:
 
         # ---- Group 15: Line-F ----
         elif group == 0xF:
-            return 2, [f"/* ${addr:06X}: LINE-F ${op:04X} (unimplemented) */"], True, [], False
+            return 2, [f"/* ${addr:06X}: LINE-F ${op:04X} (unimplemented) */", "return;"], True, [], False
 
         self.unhandled_opcodes.add(op)
         return 2, [f"/* ${addr:06X}: UNKNOWN ${op:04X} */"], False, [], False
@@ -356,6 +357,12 @@ class Disassembler:
         lines.extend(post_lines2)
 
         return total_len, lines, False, [], False
+
+    def _ea_write_expr(self, ea_write, val_expr, addr=0):
+        """Safely generate a write expression, handling None ea_write."""
+        if ea_write is None:
+            return f"/* write to read-only EA at ${addr:06X} */"
+        return ea_write.replace("{val}", val_expr)
 
     def _ea_side_effects(self, mode, reg, info, size, prefix):
         """Generate pre/post lines for -(An) and (An)+ addressing."""
@@ -1627,9 +1634,12 @@ class Disassembler:
             lines = []
             pre, post = self._ea_side_effects(ea_mode, ea_reg, ea_info, size, "")
             lines.extend(pre)
-            lines.append(f"{{ uint{sz}_t _tmp = {ea_read}; "
-                         f"M68K_{op_name}{sz}(_tmp, (uint{sz}_t)g_m68k.d[{reg}]); "
-                         f"{ea_write.replace('{val}', '_tmp')}; }}")
+            if ea_write is None:
+                lines.append(f"/* ${addr:06X}: {op_name} to read-only EA */")
+            else:
+                lines.append(f"{{ uint{sz}_t _tmp = {ea_read}; "
+                             f"M68K_{op_name}{sz}(_tmp, (uint{sz}_t)g_m68k.d[{reg}]); "
+                             f"{ea_write.replace('{val}', '_tmp')}; }}")
             lines.extend(post)
             return pc - addr, lines, False, [], False
 
@@ -1668,6 +1678,9 @@ class Disassembler:
                 self.func_entries.add(vec)
                 self.pending.append(vec)
 
+        # Scan for jump tables: JMP 2(PC,D0.W) pattern = $4EFB $0002
+        self._scan_jump_tables()
+
         # Recursive descent
         pass_num = 0
         while self.pending:
@@ -1685,6 +1698,98 @@ class Disassembler:
 
         print(f"  Discovery complete: {len(self.func_entries)} functions, "
               f"{len(self.code_addrs)} instruction addresses")
+
+    def _scan_jump_tables(self):
+        """Scan ROM for JMP d8(PC,Xn) patterns and extract jump table targets."""
+        tables_found = 0
+        targets_found = 0
+
+        for addr in range(0x200, self.rom_size - 4, 2):
+            op = self.read16(addr)
+
+            # JMP d8(PC,Xn) = $4EFB
+            if op == 0x4EFB:
+                ext = self.read16(addr + 2)
+                disp = self.sext8(ext & 0xFF)
+                xreg = (ext >> 12) & 7
+                # Only handle the common case: JMP 2(PC,D0.W) or similar
+                # where the table immediately follows the instruction
+                table_base = (addr + 2 + disp) & 0xFFFFFF
+                if table_base < self.rom_size and table_base >= 0x200:
+                    entries = self._read_word_offset_table(table_base, max_entries=30)
+                    if len(entries) >= 2:
+                        self.jump_tables[addr] = entries
+                        tables_found += 1
+                        for target in entries:
+                            if target not in self.func_entries and target not in self.visited:
+                                self.branch_targets.add(target)
+                                if target not in self.pending:
+                                    self.pending.append(target)
+                                targets_found += 1
+
+        print(f"  Jump tables: {tables_found} tables, {targets_found} new code targets")
+
+        # Also scan for longword pointer tables (common for JSR (An) dispatch)
+        # Look for sequences of 4+ valid code pointers
+        ltables = 0
+        ltargets = 0
+        addr = 0x200
+        while addr < self.rom_size - 16:
+            # Check if this could be a longword table
+            count = 0
+            for i in range(30):
+                ptr = self.read32(addr + i * 4)
+                if 0x200 <= ptr < self.rom_size and (ptr & 1) == 0:
+                    tgt_op = self.read16(ptr)
+                    tgt_group = (tgt_op >> 12) & 0xF
+                    if tgt_group != 0xA and tgt_group != 0xF:
+                        count += 1
+                    else:
+                        break
+                else:
+                    break
+            if count >= 6:
+                # Verify this isn't inside known code
+                if addr not in self.code_addrs:
+                    for i in range(count):
+                        ptr = self.read32(addr + i * 4)
+                        if ptr not in self.func_entries and ptr not in self.visited:
+                            self.func_entries.add(ptr)
+                            if ptr not in self.pending:
+                                self.pending.append(ptr)
+                            ltargets += 1
+                    ltables += 1
+                    addr += count * 4
+                    continue
+            addr += 2
+
+        if ltables:
+            print(f"  Pointer tables: {ltables} tables, {ltargets} new function entries")
+
+    def _read_word_offset_table(self, table_base, max_entries=30):
+        """Read a table of word offsets from table_base, returning absolute targets."""
+        entries = []
+        seen = set()
+        for i in range(max_entries):
+            offset_addr = table_base + i * 2
+            if offset_addr + 1 >= self.rom_size:
+                break
+            offset = self.sext16(self.read16(offset_addr))
+            target = (table_base + offset) & 0xFFFFFF
+            # Validate: target should be in ROM, word-aligned, and look like code
+            if target < 0x200 or target >= self.rom_size or (target & 1):
+                break
+            # Check the opcode at target isn't obviously data
+            target_op = self.read16(target)
+            group = (target_op >> 12) & 0xF
+            if group == 0xA or group == 0xF:  # Line-A or Line-F
+                break
+            entries.append(target)
+            if target in seen and len(entries) > 2:
+                # Repeated entry — likely end of table or valid repeat
+                pass
+            seen.add(target)
+        return entries
 
         if self.unhandled_opcodes:
             print(f"  Unhandled opcodes: {len(self.unhandled_opcodes)}")
