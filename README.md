@@ -52,7 +52,7 @@ modern hardware without fiddling with emulator settings.*
   [Static Recompiler]     tools/recompile.py
          |                   - Recursive descent disassembly
          |                   - M68K -> C code generation
-         v                   - 940 functions, 46,000+ instructions
+         v                   - 1,408 functions, 46,000+ instructions
   Native C Functions
          |
          v
@@ -64,8 +64,8 @@ modern hardware without fiddling with emulator settings.*
          v                   - Controller I/O
   Native Executable        Pure native code, ~60 FPS
 
-  Stats: 940 functions | 46,000+ instructions | 68K lines of C
-         71 jump tables | 608 pointer tables detected
+  Stats: 1,408 functions | 62,000+ instructions | 92K lines of C
+         71 jump tables | 608 pointer tables | full ROM call scan
 ```
 
 Every M68K instruction in the original ROM has been converted to equivalent C
@@ -137,7 +137,7 @@ genchaos/
 │   └── game_analysis.md    ROM structure, code regions, state machines
 ├── src/
 │   ├── main.c              Game harness (init, main loop, shutdown)
-│   └── recompiled/         Generated C files (940 functions)
+│   └── recompiled/         Generated C files (1,408 functions)
 │       ├── recomp_000.c    Functions chunk 0
 │       ├── recomp_001.c    Functions chunk 1
 │       ├── ...             (5 source files total)

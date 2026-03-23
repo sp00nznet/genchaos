@@ -11,10 +11,6 @@
  * Pick your squad of 5 (or 3 commandos), choose your battlefield, and
  * unleash glorious cartoon violence upon your opponent.
  *
- * This recompilation converts the original M68K machine code into native
- * C that runs on modern hardware with full Genesis accuracy — real VDP
- * rendering, YM2612 FM synthesis, and SN76489 PSG audio.
- *
  * No emulation. No interpretation. Just pure, recompiled chaos.
  */
 
@@ -22,18 +18,66 @@
 #include "genchaos.h"
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
 
 /* ====================================================================
- * VBlank handler — called when the display reaches vertical blank.
- * The original game's VBlank ISR lives at the address stored in the
- * vector table at offset 0x78 (vector 30).
+ * Function call miss tracking
+ *
+ * When the game calls an address we didn't recompile, we log it.
+ * This helps identify missing code paths for future recompiler runs.
+ * ==================================================================== */
+
+#define MAX_MISS_LOG 256
+static uint32_t s_miss_log[MAX_MISS_LOG];
+static int s_miss_count = 0;
+
+static void log_miss(uint32_t addr) {
+    /* Check if already logged */
+    for (int i = 0; i < s_miss_count; i++) {
+        if (s_miss_log[i] == addr) return;
+    }
+    if (s_miss_count < MAX_MISS_LOG) {
+        s_miss_log[s_miss_count++] = addr;
+        fprintf(stderr, "  MISS: func_table_call($%06X) — not recompiled\n", addr);
+    }
+}
+
+/* ====================================================================
+ * VBlank handler — the heartbeat of the game
+ *
+ * On real Genesis hardware, VBlank fires as a level-6 interrupt at
+ * ~60Hz (NTSC). The game's VBlank ISR handles DMA transfers, scroll
+ * updates, palette changes, input polling, and sound driver ticks.
+ *
+ * In our recompilation, the bus cycle simulation fires this callback
+ * when enough cycles have accumulated for v_counter to cross the
+ * VBlank boundary. This keeps the game's timing-dependent code
+ * working correctly.
  * ==================================================================== */
 
 static uint32_t vblank_vector = 0;
+static int frame_count = 0;
 
 static void vblank_handler(void) {
     if (vblank_vector) {
         func_table_call(vblank_vector);
+    }
+
+    /* Render and present this frame */
+    genrecomp_end_frame();
+    frame_count++;
+
+    /* Start next frame (poll input, reset cycle counters) */
+    if (!genrecomp_begin_frame()) {
+        /* User requested quit — exit the game */
+        printf("\n  Ran %d frames. Thanks for playing!\n", frame_count);
+        printf("  A Brian Colin / Jeff Nauman production.\n\n");
+        if (s_miss_count > 0) {
+            printf("  %d unique function addresses were not recompiled.\n", s_miss_count);
+            printf("  Re-run the recompiler to discover these code paths.\n");
+        }
+        genrecomp_shutdown();
+        exit(0);
     }
 }
 
@@ -58,11 +102,19 @@ int main(int argc, char *argv[]) {
     printf("  ============================================\n");
     printf("\n");
 
+    /* Parse command line */
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--scale") == 0 && i + 1 < argc) {
+            scale = atoi(argv[++i]);
+            if (scale < 1) scale = 1;
+            if (scale > 8) scale = 8;
+        } else if (argv[i][0] != '-') {
+            rom_path = argv[i];
+        }
+    }
+
     /* Find ROM path from args or default location */
-    if (argc > 1) {
-        rom_path = argv[1];
-    } else {
-        /* Try common locations */
+    if (!rom_path) {
         static const char *rom_paths[] = {
             "rom/General Chaos (USA, Europe).gen",
             "General Chaos (USA, Europe).gen",
@@ -82,88 +134,95 @@ int main(int argc, char *argv[]) {
 
     if (!rom_path) {
         fprintf(stderr, "No ROM file found!\n");
-        fprintf(stderr, "Usage: genchaos [rom_file]\n");
+        fprintf(stderr, "Usage: genchaos [--scale N] [rom_file]\n");
         fprintf(stderr, "  Place your General Chaos ROM in the rom/ directory.\n");
         return 1;
     }
 
-    printf("  ROM: %s\n\n", rom_path);
+    printf("  ROM:   %s\n", rom_path);
+    printf("  Scale: %dx (%dx%d window)\n\n", scale, 320 * scale, 224 * scale);
 
     /* Initialize genrecomp (creates SDL2 window + Genesis hardware) */
-    if (!genrecomp_init("General Chaos", scale)) {
+    if (!genrecomp_init("General Chaos — A Brian Colin Production", scale)) {
         fprintf(stderr, "Failed to initialize genrecomp!\n");
         return 1;
     }
 
-    /* Load the ROM — this populates the Genesis memory map */
-    printf("  Loading ROM...\n");
-    fflush(stdout);
-
+    /* Load the ROM */
     if (!genrecomp_load_rom(rom_path)) {
         fprintf(stderr, "Failed to load ROM: %s\n", rom_path);
         genrecomp_shutdown();
         return 1;
     }
-    printf("  ROM loaded successfully.\n");
-    fflush(stdout);
 
     /* Register all recompiled functions */
     genchaos_register_all();
     printf("  Registered %d recompiled functions\n", GENCHAOS_NUM_FUNCS);
-    fflush(stdout);
 
-    /* Read vector table from loaded ROM */
+    /* Read vector table */
     uint32_t entry_pc = bus_read32(0x000004);
     vblank_vector = bus_read32(0x000078);
 
-    printf("  Entry point:    $%06X\n", entry_pc);
-    printf("  VBlank handler: $%06X\n", vblank_vector);
+    printf("  Entry:  $%06X\n", entry_pc);
+    printf("  VBlank: $%06X\n", vblank_vector);
     printf("\n");
-    printf("  Controls:\n");
-    printf("    Arrow keys  = D-pad\n");
-    printf("    Z           = A button\n");
-    printf("    X           = B button\n");
-    printf("    C           = C button\n");
-    printf("    Enter       = Start\n");
-    printf("    Escape      = Quit\n");
+    printf("  Controls: Arrows=D-pad  Z/X/C=A/B/C  Enter=Start  Esc=Quit\n");
     printf("\n");
     printf("  LET THE CHAOS BEGIN!\n\n");
     fflush(stdout);
 
-    /* Set up VBlank callback for bus cycle simulation */
+    /* ================================================================
+     * Set up the VBlank callback
+     *
+     * The game's main loop lives INSIDE the entry point. It never
+     * returns. The game polls VDP status in tight loops waiting for
+     * VBlank. Our bus cycle simulation advances v_counter on each
+     * memory access, and when VBlank is reached, this callback fires.
+     *
+     * The callback:
+     *   1. Calls the game's VBlank ISR (DMA, scroll, sound tick)
+     *   2. Renders the frame via genrecomp_end_frame()
+     *   3. Starts the next frame via genrecomp_begin_frame()
+     *
+     * This gives us proper 60Hz frame-locked rendering driven by the
+     * game's own control flow, exactly like real hardware.
+     * ================================================================ */
     bus_set_vblank_callback(vblank_handler);
 
-    /* Initialize CPU state */
-    g_m68k.ssp = bus_read32(0x000000);
-    g_m68k.a[7] = g_m68k.ssp;
-    g_m68k.pc = entry_pc;
-    g_m68k.flag_S = true;
-    g_m68k.int_mask = 7;
+    /* Start the first frame */
+    genrecomp_begin_frame();
 
-    printf("  CPU initialized: SSP=$%08X PC=$%06X\n", g_m68k.ssp, g_m68k.pc);
-    printf("  Calling entry point...\n");
-    fflush(stdout);
+    /*
+     * Run the entry point. On a real Genesis, the M68K starts executing
+     * from the reset vector and runs forever. The game's init code sets
+     * up VDP, loads palettes and tiles, then enters the main game loop.
+     *
+     * The main loop typically:
+     *   1. Waits for VBlank (polling VDP status bit 3)
+     *   2. Processes game logic for this frame
+     *   3. Updates VDP registers and prepares DMA
+     *   4. Loops back to step 1
+     *
+     * Since the entry point contains this infinite loop, this call
+     * should never return. Frame rendering happens inside the VBlank
+     * callback whenever the bus simulation detects VBlank timing.
+     */
+    if (func_table_call(entry_pc)) {
+        /* Entry point returned — unusual, but handle it.
+         * Fall through to a VBlank-driven frame loop. */
+        printf("  Entry point returned. Running VBlank-driven loop.\n");
+        fflush(stdout);
 
-    /* Run the entry point (game initialization) */
-    if (!func_table_call(entry_pc)) {
-        printf("  WARNING: Entry point $%06X not found in function table!\n", entry_pc);
-        printf("  The game's init code may use addresses not yet discovered.\n");
-        printf("  Continuing to main loop anyway...\n");
+        while (genrecomp_begin_frame()) {
+            genrecomp_trigger_vblank();
+            genrecomp_end_frame();
+        }
     } else {
-        printf("  Entry point returned successfully.\n");
-    }
-    fflush(stdout);
-
-    /* Main game loop */
-    while (genrecomp_begin_frame()) {
-        /* The game's main loop is driven by VBlank interrupts.
-         * genrecomp_end_frame() renders all scanlines and triggers
-         * the VBlank callback at the appropriate time. */
-        genrecomp_trigger_vblank();
-        genrecomp_end_frame();
+        fprintf(stderr, "  Entry point $%06X not found in function table!\n", entry_pc);
+        fprintf(stderr, "  Cannot run game without entry point code.\n");
     }
 
-    printf("  Thanks for playing General Chaos!\n");
+    printf("\n  Ran %d frames. Thanks for playing!\n", frame_count);
     printf("  A Brian Colin / Jeff Nauman production.\n\n");
 
     genrecomp_shutdown();

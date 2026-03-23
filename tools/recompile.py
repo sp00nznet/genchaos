@@ -824,9 +824,9 @@ class Disassembler:
             disp = self.sext8(ext & 0xFF)
             xreg = (ext >> 12) & 7
             xtype = "a" if (ext & 0x8000) else "d"
-            xsize = "int32_t" if (ext & 0x0800) else "(int32_t)(int16_t)"
+            xsize = "(int32_t)" if (ext & 0x0800) else "(int32_t)(int16_t)"
             pc += 2
-            addr_expr = f"(g_m68k.a[{ea_reg}] + (uint32_t)({xsize})g_m68k.{xtype}[{xreg}] + {disp})"
+            addr_expr = f"(g_m68k.a[{ea_reg}] + (uint32_t){xsize}g_m68k.{xtype}[{xreg}] + {disp})"
             return pc - addr, [
                 f"g_m68k.a[7] -= 4; bus_write32(g_m68k.a[7], 0x{pc & 0xFFFFFF:06X});",
                 f"func_table_call({addr_expr});"
@@ -887,9 +887,9 @@ class Disassembler:
             disp = self.sext8(ext & 0xFF)
             xreg = (ext >> 12) & 7
             xtype = "a" if (ext & 0x8000) else "d"
-            xsize = "int32_t" if (ext & 0x0800) else "(int32_t)(int16_t)"
+            xsize = "(int32_t)" if (ext & 0x0800) else "(int32_t)(int16_t)"
             pc += 2
-            addr_expr = f"(g_m68k.a[{ea_reg}] + (uint32_t)({xsize})g_m68k.{xtype}[{xreg}] + {disp})"
+            addr_expr = f"(g_m68k.a[{ea_reg}] + (uint32_t){xsize}g_m68k.{xtype}[{xreg}] + {disp})"
             return pc - addr, [
                 f"func_table_call({addr_expr});",
                 f"return;"
@@ -918,10 +918,10 @@ class Disassembler:
             disp = self.sext8(ext & 0xFF)
             xreg = (ext >> 12) & 7
             xtype = "a" if (ext & 0x8000) else "d"
-            xsize = "int32_t" if (ext & 0x0800) else "(int32_t)(int16_t)"
+            xsize = "(int32_t)" if (ext & 0x0800) else "(int32_t)(int16_t)"
             pc += 2
             return pc - addr, [
-                f"g_m68k.a[{reg}] = g_m68k.a[{ea_reg}] + (uint32_t)({xsize})g_m68k.{xtype}[{xreg}] + {disp};"
+                f"g_m68k.a[{reg}] = g_m68k.a[{ea_reg}] + (uint32_t){xsize}g_m68k.{xtype}[{xreg}] + {disp};"
             ], False, [], False
         elif ea_mode == 7 and ea_reg == 0:  # LEA xxx.W
             val = self.sext16(self.read16(pc)) & 0xFFFFFF
@@ -941,11 +941,11 @@ class Disassembler:
             disp = self.sext8(ext & 0xFF)
             xreg = (ext >> 12) & 7
             xtype = "a" if (ext & 0x8000) else "d"
-            xsize = "int32_t" if (ext & 0x0800) else "(int32_t)(int16_t)"
+            xsize = "(int32_t)" if (ext & 0x0800) else "(int32_t)(int16_t)"
             base = (pc + disp) & 0xFFFFFF
             pc += 2
             return pc - addr, [
-                f"g_m68k.a[{reg}] = 0x{base:06X} + (uint32_t)({xsize})g_m68k.{xtype}[{xreg}];"
+                f"g_m68k.a[{reg}] = 0x{base:06X} + (uint32_t){xsize}g_m68k.{xtype}[{xreg}];"
             ], False, [], False
 
         self.unhandled_opcodes.add(op)
@@ -1678,8 +1678,9 @@ class Disassembler:
                 self.func_entries.add(vec)
                 self.pending.append(vec)
 
-        # Scan for jump tables: JMP 2(PC,D0.W) pattern = $4EFB $0002
+        # Scan for jump tables and subroutine calls throughout the ROM
         self._scan_jump_tables()
+        self._scan_all_calls()
 
         # Recursive descent
         pass_num = 0
@@ -1790,6 +1791,68 @@ class Disassembler:
                 pass
             seen.add(target)
         return entries
+
+    def _scan_all_calls(self):
+        """Scan the entire ROM for JSR and BSR instructions to find all subroutine targets."""
+        targets_found = 0
+        for addr in range(0x200, self.rom_size - 6, 2):
+            op = self.read16(addr)
+            pc = addr + 2
+
+            # JSR xxx.L ($4EB9)
+            if op == 0x4EB9:
+                target = self.read32(pc) & 0xFFFFFF
+                if 0x200 <= target < self.rom_size and (target & 1) == 0:
+                    if target not in self.func_entries:
+                        self.func_entries.add(target)
+                        if target not in self.pending:
+                            self.pending.append(target)
+                            targets_found += 1
+
+            # JSR xxx.W ($4EB8)
+            elif op == 0x4EB8:
+                target = self.sext16(self.read16(pc)) & 0xFFFFFF
+                if 0x200 <= target < self.rom_size and (target & 1) == 0:
+                    if target not in self.func_entries:
+                        self.func_entries.add(target)
+                        if target not in self.pending:
+                            self.pending.append(target)
+                            targets_found += 1
+
+            # JSR d16(PC) ($4EBA)
+            elif op == 0x4EBA:
+                disp = self.sext16(self.read16(pc))
+                target = (pc + disp) & 0xFFFFFF
+                if 0x200 <= target < self.rom_size and (target & 1) == 0:
+                    if target not in self.func_entries:
+                        self.func_entries.add(target)
+                        if target not in self.pending:
+                            self.pending.append(target)
+                            targets_found += 1
+
+            # BSR.W ($6100)
+            elif op == 0x6100:
+                disp = self.sext16(self.read16(pc))
+                target = (pc + disp) & 0xFFFFFF
+                if 0x200 <= target < self.rom_size and (target & 1) == 0:
+                    if target not in self.func_entries:
+                        self.func_entries.add(target)
+                        if target not in self.pending:
+                            self.pending.append(target)
+                            targets_found += 1
+
+            # BSR.B ($61xx, xx != 00 and xx != FF)
+            elif (op & 0xFF00) == 0x6100 and (op & 0xFF) not in (0x00, 0xFF):
+                disp = self.sext8(op & 0xFF)
+                target = (pc + disp) & 0xFFFFFF
+                if 0x200 <= target < self.rom_size and (target & 1) == 0:
+                    if target not in self.func_entries:
+                        self.func_entries.add(target)
+                        if target not in self.pending:
+                            self.pending.append(target)
+                            targets_found += 1
+
+        print(f"  Full ROM call scan: {targets_found} new subroutine targets")
 
         if self.unhandled_opcodes:
             print(f"  Unhandled opcodes: {len(self.unhandled_opcodes)}")
