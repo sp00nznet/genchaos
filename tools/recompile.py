@@ -1685,10 +1685,9 @@ class Disassembler:
         # be recompiled for performance.
         hot_path_addrs = [
             0x0DF826,  # Z80/sound driver init — called every VBlank
-            # Note: $0E0150 and $0DFDEA are NOT seeded as separate functions
-            # because they form a DBcc loop. $0E0150 branches back to
-            # $0DFDEA which is inside func_0DFDE2. Seeding them as
-            # separate entries would create cross-function call loops.
+            0x0DFDEA,  # VBlank processing body — called from hand-written $0E0150
+            # Note: $0E0150 is NOT seeded — it's hand-written in main.c
+            # to break the DBcc cross-function loop.
         ]
         for addr in hot_path_addrs:
             if 0x200 <= addr < self.rom_size and addr not in self.func_entries:

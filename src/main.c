@@ -109,6 +109,25 @@ static void vblank_handler(void) {
  * Main — where the chaos begins
  * ==================================================================== */
 
+/*
+ * Hand-written native handler for $0E0150 — the DBF D7,$0DFDEA loop.
+ * This is the hottest interpreter path (~6 calls per VBlank).
+ * Original M68K: DBF D7,$0DFDEA / RTS
+ */
+static void native_0E0150(void) {
+    /* DBF D7, $0DFDEA — decrement D7, branch if != -1 */
+    int16_t cnt = (int16_t)(uint16_t)g_m68k.d[7];
+    cnt--;
+    g_m68k.d[7] = (g_m68k.d[7] & 0xFFFF0000) | (uint16_t)cnt;
+    if (cnt != -1) {
+        genchaos_call(0x0DFDEA);
+        return;
+    }
+    /* RTS */
+    g_m68k.pc = bus_read32(g_m68k.a[7]);
+    g_m68k.a[7] += 4;
+}
+
 int main(int argc, char *argv[]) {
     const char *rom_path = NULL;
     int scale = 3;  /* 960x672 default window */
@@ -200,6 +219,19 @@ int main(int argc, char *argv[]) {
 
     /* Register all recompiled functions */
     genchaos_register_all();
+
+    /*
+     * Register hand-written native handler for $0E0150 — a DBF loop
+     * that's called ~6x per VBlank from multiple functions. It was merged
+     * as a label inside func_0DFDE2, so the function table doesn't have it.
+     * Without this, every call goes through the interpreter.
+     */
+    {
+        extern void func_0DFDE2(void);  /* parent function containing lbl_0E0150 */
+        /* Register a handler that does the DBF and loops via the parent func */
+        static void native_0E0150(void);
+        func_table_register(0x0E0150, native_0E0150);
+    }
     printf("  Registered %d recompiled functions\n", GENCHAOS_NUM_FUNCS);
 
     /* Read vector table */
