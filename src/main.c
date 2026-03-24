@@ -78,11 +78,21 @@ static void vblank_handler(void) {
     if (s_in_vblank) return;  /* Prevent re-entry */
     if (vblank_vector) {
         s_in_vblank = true;
-        /*
-         * Simulate a real M68K level-6 interrupt using the proper
-         * exception mechanism. This pushes SR+PC onto the supervisor
-         * stack, calls the handler, and RTE pops them back.
-         */
+
+        /* Feed simulated input BEFORE the VBlank handler reads it */
+        if (max_frames > 0) {
+            uint16_t buttons = 0;
+            /* Aggressive input: cycle through button combos */
+            int phase = (frame_count / 30) % 8;
+            switch (phase) {
+            case 0: case 4: buttons = GEN_BTN_START; break;
+            case 1: case 5: buttons = GEN_BTN_A; break;
+            case 2: case 6: buttons = GEN_BTN_C; break;
+            case 3: case 7: buttons = 0; break;  /* release */
+            }
+            io_set_pad_state(0, buttons);
+        }
+
         recomp_m68k_exception(30); /* Vector 30 = VBlank */
         s_in_vblank = false;
     }
@@ -100,11 +110,29 @@ static void vblank_handler(void) {
     frame_count++;
 
     /* Progress reporting */
-    if (max_frames > 0 && (frame_count % 300 == 0)) {
+    if (max_frames > 0) {
         uint16_t game_state = bus_read16(0xFF0332);
-        fprintf(stderr, "  Frame %5d/%d  SP=$%08X  state=%d\n",
-                frame_count, max_frames, g_m68k.a[7], game_state);
-        fflush(stderr);
+        static uint16_t last_state = 0xFFFF;
+        if (game_state != last_state) {
+            fprintf(stderr, "  Frame %5d: STATE CHANGED %d -> %d\n",
+                    frame_count, last_state, game_state);
+            fflush(stderr);
+            last_state = game_state;
+        }
+        if (frame_count % 300 == 0) {
+            /* Read several RAM locations for debugging */
+            uint16_t ram_0334 = bus_read16(0xFF0334);
+            uint16_t ram_0336 = bus_read16(0xFF0336);
+            uint16_t ram_0656 = bus_read16(0xFF0656);
+            uint16_t pad_raw  = bus_read16(0xFF0338);
+            uint32_t vbl_counter = bus_read32(0xFFD1B4);
+            uint32_t task_count = bus_read32(0xFFE580);
+            fprintf(stderr, "  Frame %5d/%d  SP=$%08X  state=%d  "
+                    "vblcnt=%u  r656=%04X  tasks=%u\n",
+                    frame_count, max_frames, g_m68k.a[7], game_state,
+                    vbl_counter, ram_0656, task_count);
+            fflush(stderr);
+        }
     }
 
     /* Frame limit for headless mode */
@@ -143,23 +171,55 @@ static void native_00028C(void) {
  * and eventually reaches $28C (BRA $2FA) → main game loop.
  */
 static void native_000224(void) {
+    /*
+     * The init from $224 to the main loop at $125C is complex:
+     * TMSS write, VDP register setup, Z80 upload, DMA wait loops,
+     * controller port init, and finally the game init at $116A.
+     *
+     * Rather than trying to stitch together fragmented recompiled
+     * functions, we let the interpreter handle the entire init
+     * sequence. It's only run once, so performance doesn't matter.
+     *
+     * The interpreter will eventually hit the BRA $self at $125C
+     * which triggers the spin-wait → VBlank → game logic cycle.
+     */
+    fprintf(stderr, "  INIT: Interpreting init sequence from $000224...\n");
+    fflush(stderr);
     interp_execute(0x000224);
+    fprintf(stderr, "  INIT: Init sequence returned (should not happen if main loop entered)\n");
+    fflush(stderr);
 }
 
 /*
  * Hand-written native handler for $0E0150 — the DBF D7,$0DFDEA loop.
  * This is the hottest interpreter path (~6 calls per VBlank).
  * Original M68K: DBF D7,$0DFDEA / RTS
+ *
+ * On real hardware this is a simple loop: DBF D7,$0DFDEA decrements D7
+ * and branches back to $0DFDEA for each sound channel. In the recompiled
+ * code, func_0DFDEA tail-calls back to $0E0150, creating deep C recursion.
+ * We use a reentrancy guard: when func_0DFDEA tail-calls us, we just
+ * return and let the outer loop handle the next iteration.
  */
+static bool s_in_dbf_loop = false;
+
 static void native_0E0150(void) {
-    /* DBF D7, $0DFDEA — decrement D7, branch if != -1 */
-    int16_t cnt = (int16_t)(uint16_t)g_m68k.d[7];
-    cnt--;
-    g_m68k.d[7] = (g_m68k.d[7] & 0xFFFF0000) | (uint16_t)cnt;
-    if (cnt != -1) {
-        genchaos_call(0x0DFDEA);
+    if (s_in_dbf_loop) {
+        /* Called from func_0DFDEA's tail-call — just return.
+         * The outer loop will handle the DBF decrement. */
         return;
     }
+
+    s_in_dbf_loop = true;
+    while (1) {
+        int16_t cnt = (int16_t)(uint16_t)g_m68k.d[7];
+        cnt--;
+        g_m68k.d[7] = (g_m68k.d[7] & 0xFFFF0000) | (uint16_t)cnt;
+        if (cnt == -1) break;
+        genchaos_call(0x0DFDEA);
+    }
+    s_in_dbf_loop = false;
+
     /* RTS */
     g_m68k.pc = bus_read32(g_m68k.a[7]);
     g_m68k.a[7] += 4;

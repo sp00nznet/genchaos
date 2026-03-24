@@ -291,7 +291,8 @@ bool interp_execute(uint32_t addr) {
 
     s_interp_calls++;
     if (s_interp_logged < INTERP_MAX_LOG) {
-        fprintf(stderr, "  INTERP: executing at $%06X (call #%d)\n", addr, s_interp_calls);
+        fprintf(stderr, "  INTERP: executing at $%06X (call #%d)\n",
+                addr, s_interp_calls);
         s_interp_logged++;
     }
 
@@ -301,6 +302,7 @@ bool interp_execute(uint32_t addr) {
         insn_count++;
 
         g_m68k.pc = pc;
+
 
         /* ---- NOP ---- */
         if (op == 0x4E71) continue;
@@ -354,7 +356,31 @@ bool interp_execute(uint32_t addr) {
                     if (!interp_execute(target)) return false;
                 }
             } else {
-                if (test_cc(cc)) pc = target;
+                if (test_cc(cc)) {
+                    /* Detect tight backward loops (like VDP status polling).
+                     * If the same Bcc branches back >1000 times, force exit.
+                     * The VDP backend doesn't update status register bits on
+                     * cycle advancement, so these loops never terminate. */
+                    static uint32_t loop_target = 0;
+                    static int loop_count = 0;
+                    if (target < pc && (pc - target) < 32) {
+                        if (target == loop_target) {
+                            loop_count++;
+                            if (loop_count > 1000) {
+                                /* Force loop exit — skip the branch */
+                                loop_count = 0;
+                                loop_target = 0;
+                                continue; /* don't take branch */
+                            }
+                        } else {
+                            loop_target = target;
+                            loop_count = 1;
+                        }
+                    } else {
+                        loop_count = 0;
+                    }
+                    pc = target;
+                }
             }
             continue;
         }
@@ -557,6 +583,29 @@ bool interp_execute(uint32_t addr) {
                 g_m68k.d[ea_reg] = val;
             }
             continue;
+        }
+
+        /* ---- NOT ---- */
+        if ((op & 0xFF00) == 0x4600) { /* NOT.B/W/L */
+            int size = (op >> 6) & 3;
+            int mode = (op >> 3) & 7;
+            int reg = op & 7;
+            if (mode == 0) { /* Data register direct */
+                if (size == 0) { /* NOT.B */
+                    uint8_t val = ~(uint8_t)g_m68k.d[reg];
+                    g_m68k.d[reg] = (g_m68k.d[reg] & 0xFFFFFF00) | val;
+                    M68K_TST8(val);
+                } else if (size == 1) { /* NOT.W */
+                    uint16_t val = ~(uint16_t)g_m68k.d[reg];
+                    g_m68k.d[reg] = (g_m68k.d[reg] & 0xFFFF0000) | val;
+                    M68K_TST16(val);
+                } else { /* NOT.L */
+                    g_m68k.d[reg] = ~g_m68k.d[reg];
+                    M68K_TST32(g_m68k.d[reg]);
+                }
+                g_m68k.flag_C = false; g_m68k.flag_V = false;
+                continue;
+            }
         }
 
         /* ---- MOVE to/from SR, LINK, UNLK, SWAP, EXT ---- */
@@ -865,7 +914,9 @@ bool interp_execute(uint32_t addr) {
     }
 
     if (insn_count >= INTERP_MAX_INSNS) {
-        fprintf(stderr, "  INTERP: hit instruction limit at $%06X\n", pc);
+        fprintf(stderr, "  INTERP: hit instruction limit (%d) at $%06X\n",
+                INTERP_MAX_INSNS, pc);
+        fflush(stderr);
     }
     return false;
 }
