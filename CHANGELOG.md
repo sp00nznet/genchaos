@@ -1,7 +1,7 @@
 # Changelog
 
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Needs
-genrecomp#6 and #7 (branch `feat/shared-recompiler` until merged).
+genrecomp#6 and #7 (genrecomp `master` from b390007).
 
 ## [Unreleased]
 

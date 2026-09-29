@@ -63,7 +63,6 @@ only needed for `--record`.
      genrecomp\   git clone --recursive https://github.com/sp00nznet/genrecomp.git
      genchaos\    this repo
    ```
-   Until genrecomp#6 and #7 are merged, check out its `feat/shared-recompiler` branch.
 2. Generate the C source from your ROM (about 15 s):
    ```
    py -3 ..\genrecomp\tools\recompiler\generate.py "path\to\General Chaos.gen" -o src\recomp -c recomp.json

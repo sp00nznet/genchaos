@@ -16,7 +16,7 @@ $Log = Join-Path $Root "setup.log"
 $Build = Join-Path $Root "build"
 $Genrecomp = Join-Path (Split-Path -Parent $Root) "genrecomp"
 $GenrecompUrl = "https://github.com/sp00nznet/genrecomp.git"
-$GenrecompPin = "45e5832"   # genrecomp#7 (shared recompiler); move to master once merged
+$GenrecompPin = "b390007"   # genrecomp master with #6 and #7
 "genchaos setup $(Get-Date -Format s)" | Out-File $Log -Encoding utf8
 
 function Say($msg) { Write-Host $msg; $msg | Out-File $Log -Append -Encoding utf8 }
