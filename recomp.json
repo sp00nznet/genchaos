@@ -1,0 +1,30 @@
+{
+  "title": "General Chaos",
+  "seeds": {
+    "0x0012E8": "sub_0012E8",
+    "0x0FF07A": "sub_0FF07A",
+    "0x0E0E40": "sub_0E0E40",
+    "0x0E0E30": "sub_0E0E30",
+    "0x0E0DA8": "sub_0E0DA8",
+    "0x0BB766": "sub_0BB766",
+    "0x0E0E72": "sub_0E0E72",
+    "0x0CA36A": "sub_0CA36A",
+    "0x0CA334": "sub_0CA334",
+    "0x0CA328": "sub_0CA328",
+    "0x0E1898": "sub_0E1898",
+    "0x0CA340": "sub_0CA340",
+    "0x0E1924": "sub_0E1924",
+    "0x0E053E": "sub_0E053E",
+    "0x0E0300": "sub_0E0300",
+    "0x0E1AFE": "sub_0E1AFE"
+  },
+  "offset_tables": [
+    {
+      "comment": "sound command handlers, dispatched at $0DFA2A",
+      "table": "0x0DFA50",
+      "base": "0x0DF2A4",
+      "size": 4,
+      "count": 108
+    }
+  ]
+}

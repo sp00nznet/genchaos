@@ -21,8 +21,14 @@ rom/
 Thumbs.db
 .DS_Store
 
-# Uncomment to exclude generated code (can be regenerated from ROM):
-# src/recompiled/
+# Generated from the user's ROM: never committed (house rules section 3)
+src/recomp/
+
+# Run output and setup
+*.mp4
+ram_*.bin
+setup.log
+Play General Chaos.cmd
 
 # Python
 __pycache__/
